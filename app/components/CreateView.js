@@ -46,7 +46,7 @@ export default function CreateView({ accountId, containerId, workspaceId }) {
       {result && <ResultPanel result={result} />}
 
       {mode === "manual"    && <ManualCreate  post={post} gtmGet={gtmGet} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />}
-      {mode === "datalayer" && <DataLayerUpload post={post} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />}
+      {mode === "datalayer" && <DataLayerUpload post={post} gtmGet={gtmGet} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />}
     </div>
   );
 }
@@ -818,15 +818,402 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
 // DATALAYER UPLOAD
 // ─────────────────────────────────────────────────────────────────────────────
 const TAG_TYPE_OPTIONS = [
-  { value: "",        label: "— No tag —"          },
-  { value: "gaawe",   label: "GA4 Event (gaawe)"   },
-  { value: "googtag", label: "Google Tag (googtag)" },
-  { value: "ua",      label: "Universal Analytics"  },
-  { value: "html",    label: "Custom HTML"          },
+  { value: "",        label: "— No tag —"                        },
+  { value: "gaawe",   label: "GA4 Event (gaawe)"                 },
+  { value: "googtag", label: "Google Tag / GA4 Config (googtag)" },
+  { value: "awct",    label: "Google Ads Conversion (awct)"      },
+  { value: "sp",      label: "Google Ads Remarketing (sp)"       },
+  { value: "flc",     label: "Floodlight Counter (flc)"          },
+  { value: "fls",     label: "Floodlight Sales (fls)"            },
+  { value: "gclidw",  label: "Conversion Linker (gclidw)"        },
+  { value: "ua",      label: "Universal Analytics (ua)"          },
+  { value: "html",    label: "Custom HTML (html)"                },
+  { value: "img",     label: "Custom Image (img)"                },
+];
+
+const ALL_TAG_TYPES = [
+  { id: "googtag",  name: "Google Tag",                  params: "tagId (G-XXXXXXXX)"                         },
+  { id: "gaawe",    name: "GA4 Event",                   params: "measurementIdOverride, eventName"            },
+  { id: "gaawc",    name: "GA4 Configuration (legacy)",  params: "measurementId"                               },
+  { id: "awct",     name: "Google Ads Conversion",       params: "conversionId, conversionLabel"               },
+  { id: "sp",       name: "Google Ads Remarketing",      params: "conversionId"                                },
+  { id: "flc",      name: "Floodlight Counter",          params: "advertiserId, groupTagString"                },
+  { id: "fls",      name: "Floodlight Sales",            params: "advertiserId, groupTagString"                },
+  { id: "gclidw",   name: "Conversion Linker",           params: "(no required params)"                        },
+  { id: "ga",       name: "Universal Analytics (legacy)",params: "trackingId, trackType"                       },
+  { id: "html",     name: "Custom HTML",                 params: "html (script content)"                       },
+  { id: "img",      name: "Custom Image",                params: "src (pixel URL)"                             },
+  { id: "bzi",      name: "LinkedIn Tag",                params: "partnerId"                                   },
+  { id: "pntr",     name: "Pinterest",                   params: "tagId"                                       },
+  { id: "baut",     name: "Bing Ads UET",                params: "tagId"                                       },
+  { id: "crto",     name: "Criteo OneTag",               params: "partnerwebsiteid"                            },
+  { id: "hjtc",     name: "Hotjar",                      params: "hjid"                                        },
 ];
 
 const ECOMMERCE_EVENTS = ["purchase","add_to_cart","remove_from_cart","view_item",
   "view_item_list","begin_checkout","add_payment_info","add_shipping_info","view_cart","refund"];
+
+// ── Duplicate Warning Modal ────────────────────────────────────────────────
+function DuplicateModal({ duplicates, onProceed, onCancel }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "white", border: "2px solid var(--warn)", borderRadius: "var(--radius-lg)", padding: 32, maxWidth: 520, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#b06000" }}>Duplicate Entities Found</div>
+            <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>These names already exist in your GTM workspace</div>
+          </div>
+        </div>
+
+        <div style={{ maxHeight: 240, overflowY: "auto", marginBottom: 20 }}>
+          {duplicates.map((d, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: "var(--radius)", background: "rgba(176,96,0,0.06)", border: "1px solid rgba(176,96,0,0.15)", marginBottom: 6 }}>
+              <span className={`badge ${d.entityType === "tag" ? "badge-warn" : d.entityType === "trigger" ? "badge-info" : "badge-neutral"}`} style={{ flexShrink: 0 }}>{d.entityType}</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, flex: 1 }}>{d.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text2)" }}>ID: {d.existingId}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ background: "rgba(176,96,0,0.06)", border: "1px solid rgba(176,96,0,0.2)", borderRadius: "var(--radius)", padding: "10px 14px", marginBottom: 20, fontSize: 12, color: "#7a4000" }}>
+          <strong>Proceed</strong> will <strong>overwrite</strong> the existing entities above with the new configuration.<br />
+          <strong>Cancel</strong> will abort — nothing will be created or changed.
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button className="btn btn-secondary" onClick={onCancel}>✕ Cancel</button>
+          <button className="btn" style={{ background: "#b06000", color: "white" }} onClick={onProceed}>
+            ⚠️ Proceed & Override
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DataLayerUpload({ post, gtmGet, setResult, setError, setLoading, loading }) {
+  const [events, setEvents]                   = useState([]);
+  const [dragover, setDragover]               = useState(false);
+  const [selectedEvents, setSelectedEvents]   = useState(new Set());
+  const [eventConfig, setEventConfig]         = useState({});
+  const [showTagRef, setShowTagRef]           = useState(false);
+  // Duplicate state
+  const [dupModal, setDupModal]               = useState(null); // { duplicates, pendingEvts }
+  const fileRef = useRef();
+
+  function parseFile(file) {
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (["xlsx", "xls"].includes(ext)) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        processRows(XLSX.utils.sheet_to_json(ws, { header: 1 }));
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (ext === "csv") {
+      Papa.parse(file, { complete: (r) => processRows(r.data), skipEmptyLines: true });
+    } else {
+      setError("Please upload a CSV or XLSX file.");
+    }
+  }
+
+  function processRows(data) {
+    const parsed = parseDataLayerDoc(data);
+    setEvents(parsed);
+    setSelectedEvents(new Set(parsed.map((e) => e.eventName)));
+    const cfg = {};
+    parsed.forEach((evt) => {
+      cfg[evt.eventName] = {
+        tagType:       evt.tagType       || "",
+        measurementId: evt.measurementId || "",
+        sendEcommerce: evt.sendEcommerce || ECOMMERCE_EVENTS.some((e) => evt.eventName.toLowerCase().includes(e)),
+      };
+    });
+    setEventConfig(cfg);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault(); setDragover(false);
+    if (e.dataTransfer.files[0]) parseFile(e.dataTransfer.files[0]);
+  }
+
+  function toggleEvent(name) {
+    const s = new Set(selectedEvents);
+    s.has(name) ? s.delete(name) : s.add(name);
+    setSelectedEvents(s);
+  }
+
+  function updateConfig(eventName, key, value) {
+    setEventConfig((prev) => ({ ...prev, [eventName]: { ...prev[eventName], [key]: value } }));
+  }
+
+  // Build the final event list with UI overrides applied
+  function buildSelectedEvts() {
+    return events
+      .filter((e) => selectedEvents.has(e.eventName))
+      .map((e) => ({
+        ...e,
+        tagType:       eventConfig[e.eventName]?.tagType       ?? e.tagType,
+        measurementId: eventConfig[e.eventName]?.measurementId ?? e.measurementId,
+        sendEcommerce: eventConfig[e.eventName]?.sendEcommerce  ?? e.sendEcommerce,
+      }));
+  }
+
+  // Compute what names will be created for each event
+  function getPlannedNames(evts) {
+    const names = [];
+    evts.forEach((evt) => {
+      names.push({ name: `CE - ${evt.eventName}`, entityType: "trigger" });
+      evt.variables.filter((v) => ["dataLayer","dlv"].includes(v.varType))
+        .forEach((v) => names.push({ name: `DLV - ${v.varName}`, entityType: "variable" }));
+      const ttype = eventConfig[evt.eventName]?.tagType || evt.tagType;
+      if (ttype) {
+        const label = ttype === "gaawe" ? "GA4" : ttype === "googtag" ? "GTag" : ttype.toUpperCase();
+        names.push({ name: `${label} - ${evt.eventName}`, entityType: "tag" });
+      }
+    });
+    return names;
+  }
+
+  async function handleCreate() {
+    setError(""); setResult(null);
+    const selectedEvts = buildSelectedEvts();
+    const planned = getPlannedNames(selectedEvts);
+
+    // Check for duplicates in GTM
+    setLoading(true);
+    let existingMap = {};
+    try {
+      const d = await gtmGet({ action: "checkDuplicates" });
+      existingMap = d.existing || {};
+    } catch (e) {
+      // If check fails, proceed anyway
+    }
+    setLoading(false);
+
+    const duplicates = planned
+      .filter((p) => existingMap[p.name])
+      .map((p) => ({ ...p, existingId: existingMap[p.name]?.id }));
+
+    if (duplicates.length > 0) {
+      // Show warning modal — store pending work
+      setDupModal({ duplicates, pendingEvts: selectedEvts, overrideMap: existingMap });
+      return;
+    }
+
+    // No duplicates — proceed directly
+    await doCreate(selectedEvts, {});
+  }
+
+  async function doCreate(selectedEvts, overrideMap) {
+    setLoading(true); setError(""); setDupModal(null);
+    try {
+      const d = await post({ action: "createFromDataLayer", payload: { events: selectedEvts, overrideMap } });
+      setResult({ type: "bulk", data: d });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const SAMPLE_CSV = `Event Name,Variable Name,Variable Type,Scope,Description,Tag Type,Measurement ID
+purchase,transaction_id,dataLayer,hit,Unique order ID,gaawe,G-XXXXXXXXXX
+purchase,revenue,dataLayer,hit,Total revenue,,
+purchase,currency,dataLayer,hit,Currency code,,
+add_to_cart,item_id,dataLayer,hit,Product SKU,gaawe,G-XXXXXXXXXX
+add_to_cart,item_name,dataLayer,hit,Product name,,
+page_view,page_type,dataLayer,session,Page type,gaawe,G-XXXXXXXXXX`;
+
+  return (
+    <div>
+      {/* Duplicate warning modal */}
+      {dupModal && (
+        <DuplicateModal
+          duplicates={dupModal.duplicates}
+          onCancel={() => setDupModal(null)}
+          onProceed={() => doCreate(dupModal.pendingEvts, dupModal.overrideMap)}
+        />
+      )}
+
+      {/* Column info + tag type reference toggle */}
+      <div className="alert alert-info" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            📋 <strong>Columns:</strong> Event Name &nbsp;|&nbsp; Variable Name &nbsp;|&nbsp; Variable Type &nbsp;|&nbsp; Scope &nbsp;|&nbsp; Description &nbsp;|&nbsp; <strong>Tag Type</strong> &nbsp;|&nbsp; <strong>Measurement ID</strong>
+            <div style={{ marginTop: 5, fontSize: 11 }}>
+              Tag Type values: <code>gaawe</code>, <code>googtag</code>, <code>awct</code>, <code>sp</code>, <code>flc</code>, <code>fls</code>, <code>gclidw</code>, <code>ua</code>, <code>html</code> — leave blank to skip tag creation.
+            </div>
+          </div>
+          <button onClick={() => setShowTagRef((v) => !v)}
+            style={{ background: "white", border: "1px solid var(--highlight-border)", borderRadius: "var(--radius)", padding: "5px 12px", fontSize: 11, fontWeight: 600, color: "#003355", cursor: "pointer", flexShrink: 0, marginLeft: 12 }}>
+            {showTagRef ? "✕ Hide" : "📖 Tag Types"}
+          </button>
+        </div>
+      </div>
+
+      {/* Tag type reference table */}
+      {showTagRef && (
+        <div className="card" style={{ marginBottom: 20, padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", background: "var(--highlight)", borderBottom: "1px solid var(--highlight-border)" }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: "#003355", letterSpacing: "0.07em" }}>📖 GTM TAG TYPE REFERENCE — all supported type strings</div>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr><th>Type String</th><th>Tag Name</th><th>Key Parameters</th></tr>
+            </thead>
+            <tbody>
+              {ALL_TAG_TYPES.map((t) => (
+                <tr key={t.id}>
+                  <td><code style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--highlight)", padding: "2px 7px", borderRadius: 4, color: "#003355" }}>{t.id}</code></td>
+                  <td style={{ fontSize: 13 }}>{t.name}</td>
+                  <td style={{ fontSize: 12, color: "var(--text2)" }}>{t.params}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ padding: "10px 18px", background: "var(--surface2)", fontSize: 11, color: "var(--text2)" }}>
+            Third-party tags (LinkedIn, Pinterest, Bing etc.) are supported by the API but require knowing their exact parameter keys. Use the Audit tab to inspect existing tags for reference.
+          </div>
+        </div>
+      )}
+
+      {!events.length && (
+        <div className={`upload-zone ${dragover ? "dragover" : ""}`}
+          onDragOver={(e) => { e.preventDefault(); setDragover(true); }}
+          onDragLeave={() => setDragover(false)}
+          onDrop={handleDrop}
+          onClick={() => fileRef.current.click()}>
+          <div className="upload-icon">📄</div>
+          <p><strong>Drop your DataLayer spec here</strong> or click to browse</p>
+          <p style={{ marginTop: 8, fontSize: 12 }}>Supports .csv and .xlsx — 7-column format</p>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }}
+            onChange={(e) => e.target.files[0] && parseFile(e.target.files[0])} />
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <span style={{ color: "var(--accent2)", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{events.length} events</span>
+              <span style={{ color: "var(--text2)" }}> parsed — configure tags below then create</span>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-secondary" onClick={() => { setEvents([]); setSelectedEvents(new Set()); setEventConfig({}); }}>↩ Clear</button>
+              <button className="btn btn-primary" onClick={handleCreate} disabled={loading || selectedEvents.size === 0}>
+                {loading ? <><span className="spinner" /> Checking…</> : `▶ Create ${selectedEvents.size} Event(s) in GTM`}
+              </button>
+            </div>
+          </div>
+
+          {events.map((evt) => {
+            const cfg = eventConfig[evt.eventName] || {};
+            const sel = selectedEvents.has(evt.eventName);
+            const isEcommerce = ECOMMERCE_EVENTS.some((e) => evt.eventName.toLowerCase().includes(e));
+            const tagTypeVal = cfg.tagType || "";
+            const needsMID   = ["gaawe", "googtag", "awct", "sp", "flc", "fls", "ua"].includes(tagTypeVal);
+
+            return (
+              <div key={evt.eventName} className="card" style={{ marginBottom: 14,
+                border: sel ? "2px solid var(--highlight-border)" : "1.5px solid var(--border)",
+                background: sel ? "#f8fcff" : "white" }}>
+
+                {/* Header row */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                  <input type="checkbox" checked={sel} onChange={() => toggleEvent(evt.eventName)}
+                    style={{ width: 16, height: 16, cursor: "pointer", accentColor: "var(--accent2)" }} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent2)", fontWeight: 700 }}>{evt.eventName}</span>
+                    {isEcommerce && <span className="badge badge-highlight" style={{ marginLeft: 8, fontSize: 10 }}>🛒 ecommerce</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, fontSize: 11, color: "var(--text2)" }}>
+                    <span className="badge badge-highlight">1 trigger</span>
+                    <span className="badge badge-neutral">{evt.variables.filter((v) => ["dataLayer","dlv"].includes(v.varType)).length} DLV vars</span>
+                    {tagTypeVal && <span className="badge badge-ok">1 {tagTypeVal} tag</span>}
+                  </div>
+                </div>
+
+                {/* Tag config row */}
+                <div style={{ display: "grid", gridTemplateColumns: needsMID ? "1fr 1fr auto" : "1fr auto", gap: 10, marginBottom: 12, padding: "12px 14px", background: "var(--highlight)", borderRadius: "var(--radius)", border: "1px solid var(--highlight-border)" }}>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "#003355", marginBottom: 5, letterSpacing: "0.06em" }}>TAG TYPE</div>
+                    <select value={tagTypeVal} onChange={(e) => updateConfig(evt.eventName, "tagType", e.target.value)}
+                      style={{ width: "100%", background: "white", border: "1px solid var(--highlight-border)", borderRadius: "var(--radius)", padding: "7px 10px", fontSize: 12, color: "var(--text)", fontFamily: "var(--font-sans)", cursor: "pointer" }}>
+                      {TAG_TYPE_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {needsMID && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: "#003355", marginBottom: 5, letterSpacing: "0.06em" }}>
+                        {tagTypeVal === "ua" ? "TRACKING ID" : tagTypeVal === "awct" ? "CONVERSION ID" : tagTypeVal === "sp" ? "CONVERSION ID" : ["flc","fls"].includes(tagTypeVal) ? "ADVERTISER ID" : "MEASUREMENT ID"}
+                      </div>
+                      <input value={cfg.measurementId || ""}
+                        onChange={(e) => updateConfig(evt.eventName, "measurementId", e.target.value)}
+                        placeholder={tagTypeVal === "ua" ? "UA-XXXXXXXX-X" : tagTypeVal === "awct" || tagTypeVal === "sp" ? "AW-XXXXXXXXXX" : ["flc","fls"].includes(tagTypeVal) ? "DC-XXXXXXXXXX" : "G-XXXXXXXXXX"}
+                        style={{ width: "100%", background: "white", border: "1px solid var(--highlight-border)", borderRadius: "var(--radius)", padding: "7px 10px", fontSize: 12, fontFamily: "var(--font-sans)" }} />
+                    </div>
+                  )}
+
+                  {tagTypeVal === "gaawe" && (
+                    <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                        padding: "7px 10px", background: cfg.sendEcommerce ? "white" : "rgba(255,255,255,0.5)",
+                        border: "1px solid", borderColor: cfg.sendEcommerce ? "var(--accent2)" : "var(--highlight-border)",
+                        borderRadius: "var(--radius)", whiteSpace: "nowrap" }}>
+                        <input type="checkbox" checked={!!cfg.sendEcommerce}
+                          onChange={(e) => updateConfig(evt.eventName, "sendEcommerce", e.target.checked)}
+                          style={{ width: 14, height: 14, accentColor: "var(--accent2)", cursor: "pointer" }} />
+                        <span style={{ fontSize: 11, fontWeight: 600, color: cfg.sendEcommerce ? "var(--accent2)" : "#555" }}>🛒 Send Ecommerce</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {/* Variables table */}
+                {evt.variables.length > 0 && (
+                  <table className="data-table">
+                    <thead><tr><th>Variable</th><th>Type</th><th>Scope</th><th>Description</th></tr></thead>
+                    <tbody>
+                      {evt.variables.map((v, i) => (
+                        <tr key={i}>
+                          <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{v.varName}</td>
+                          <td><span className="badge badge-neutral">{v.varType}</span></td>
+                          <td style={{ color: "var(--text2)", fontSize: 12 }}>{v.scope}</td>
+                          <td style={{ color: "var(--text2)", fontSize: 12 }}>{v.desc}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {!events.length && (
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="card-title">📋 Sample 7-Column Format</div>
+          <div className="code-block" style={{ fontSize: 11 }}>{SAMPLE_CSV}</div>
+          <div style={{ fontSize: 11, color: "var(--text2)", marginTop: 10 }}>
+            Only the first row of each event group needs Tag Type and Measurement ID — subsequent rows for the same event can leave those blank.
+          </div>
+          <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => {
+            const blob = new Blob([SAMPLE_CSV], { type: "text/csv" });
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+            a.download = "datalayer_template.csv"; a.click();
+          }}>⬇ Download CSV Template</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
   const [events, setEvents]                 = useState([]);
@@ -1094,18 +1481,23 @@ function ResultPanel({ result }) {
   }
   if (result.type === "bulk") {
     const { created } = result.data;
-    const tags = created.filter((c) => c.type === "tag");
-    const triggers = created.filter((c) => c.type === "trigger");
+    const tags      = created.filter((c) => c.type === "tag");
+    const triggers  = created.filter((c) => c.type === "trigger");
     const variables = created.filter((c) => c.type === "variable");
+    const updated   = created.filter((c) => c.action === "updated").length;
+    const newCount  = created.filter((c) => c.action === "created").length;
     return (
       <div className="alert alert-success">
-        ✅ Created <strong>{created.length}</strong> entities in GTM:
+        ✅ Done — <strong>{newCount} created</strong>{updated > 0 ? <>, <strong style={{ color: "var(--warn)" }}>{updated} overwritten</strong></> : ""} in GTM:
         {[["🏷️ Tags", tags], ["⚡ Triggers", triggers], ["📐 Variables", variables]].map(([label, items]) =>
           items.length > 0 && (
             <div key={label} style={{ marginTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>{label}</div>
               {items.map((c, i) => (
                 <div key={i} style={{ fontSize: 12, marginTop: 3, display: "flex", alignItems: "center", gap: 8 }}>
+                  {c.action === "updated"
+                    ? <span className="badge badge-warn" style={{ fontSize: 10 }}>updated</span>
+                    : <span className="badge badge-ok"   style={{ fontSize: 10 }}>created</span>}
                   <span style={{ fontFamily: "var(--font-mono)" }}>{c.name}</span>
                   <span style={{ color: "var(--text2)" }}>#{c.id}</span>
                   {c.url && <a href={c.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent2)", fontSize: 11 }}>Open →</a>}

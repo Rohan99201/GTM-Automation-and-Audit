@@ -144,6 +144,8 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
             .filter((p) => p.key && p.value)
             .map((p) => ({ type: "template", key: p.key, value: p.value })),
         ];
+        // Validate every param has type (safety check)
+        parameter.forEach((p, i) => { if (!p.type) throw new Error(`parameter[${i}] is missing a type`); });
 
         const d = await post({
           action: "createGtagConfig",
@@ -279,7 +281,13 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
   // ── Live preview ───────────────────────────────────────────────────────────
   const previewPayload =
     entityType === "googletag"
-      ? { type: gtagType, parameter: [{ type: "template", key: gtagType === "awct" ? "conversionId" : "measurementId", value: gtagConfigId || "(required)" }, ...gtagParams.filter((p) => p.key)] }
+      ? {
+          type: gtagType,
+          parameter: [
+            { type: "template", key: gtagType === "awct" ? "conversionId" : "measurementId", value: gtagConfigId || "(required)" },
+            ...gtagParams.filter((p) => p.key && p.value).map((p) => ({ type: "template", key: p.key, value: p.value })),
+          ],
+        }
       : entityType === "tag"
       ? {
           name: tagName, type: tagType,
@@ -704,10 +712,10 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
       </div>
 
       {/* ── RIGHT PANEL ─────────────────────────────────────────────────── */}
-      <div>
+      <div style={{ position: "sticky", top: 24, alignSelf: "start" }}>
         <div className="card">
           <div className="card-title">👁️ Live Payload Preview</div>
-          <div className="code-block">{JSON.stringify(previewPayload, null, 2)}</div>
+          <div className="code-block" style={{ maxHeight: 340, overflowY: "auto" }}>{JSON.stringify(previewPayload, null, 2)}</div>
         </div>
 
         <div className="card card-highlight">

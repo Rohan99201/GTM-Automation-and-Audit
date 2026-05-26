@@ -69,6 +69,10 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
   const [sendEcommerce,  setSendEcommerce]  = useState(false);
   const [eventParams,    setEventParams]    = useState([{ name: "", value: "" }]);
 
+  // Google Tag (googtag as Tag type)
+  const [googtagId,      setGoogtagId]      = useState("");   // tagId param = G-XXXXXXXX
+  const [configParams,   setConfigParams]   = useState([{ name: "", value: "" }]); // configSettingsTable
+
   // UA
   const [trackingId, setTrackingId] = useState("");
   const [trackType,  setTrackType]  = useState("TRACK_EVENT");
@@ -160,8 +164,25 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
         if (!tagName) throw new Error("Tag name is required");
         let builtParams = [];
 
-        if (tagType === "gaawe") {
-          if (!measurementId) throw new Error("Measurement ID is required for GA4 tags");
+        if (tagType === "googtag") {
+          if (!googtagId) throw new Error("Tag ID (Measurement ID) is required for Google Tag");
+          builtParams = [
+            { type: "template", key: "tagId", value: googtagId },
+          ];
+          const validCP = configParams.filter((p) => p.name && p.value);
+          if (validCP.length) {
+            builtParams.push({
+              type: "list", key: "configSettingsTable",
+              list: validCP.map((p) => ({
+                type: "map",
+                map: [
+                  { type: "template", key: "parameter",      value: p.name  },
+                  { type: "template", key: "parameterValue", value: p.value },
+                ],
+              })),
+            });
+          }
+        } else if (tagType === "gaawe") {
           if (!ga4EventName)  throw new Error("Event Name is required for GA4 tags");
           builtParams = [
             { type: "template", key: "measurementIdOverride", value: measurementId },
@@ -291,6 +312,10 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
       : entityType === "tag"
       ? {
           name: tagName, type: tagType,
+          ...(tagType === "googtag" ? {
+            tagId: googtagId,
+            configSettingsTable: configParams.filter((p) => p.name).map((p) => ({ parameter: p.name, parameterValue: p.value })),
+          } : {}),
           ...(tagType === "gaawe" ? { measurementIdOverride: measurementId, eventName: ga4EventName, eventSettingsTable: eventParams.filter((p) => p.name), sendEcommerceData: sendEcommerce } : {}),
           ...(tagType === "ua"   ? { trackingId, trackType } : {}),
           firingTriggerId: selectedTriggerIds,
@@ -423,6 +448,7 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
                 <label className="form-label">Tag Type</label>
                 <select className="form-select" value={tagType} onChange={(e) => setTagType(e.target.value)}>
                   <option value="gaawe">GA4 Event</option>
+                  <option value="googtag">Google Tag (googtag)</option>
                   <option value="ua">Universal Analytics</option>
                   <option value="html">Custom HTML</option>
                   <option value="img">Custom Image</option>
@@ -481,6 +507,47 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
                     <div style={{ fontSize: 11, color: sendEcommerce ? "#005588" : "var(--text2)" }}>Reads from dataLayer ecommerce object</div>
                   </div>
                 </label>
+              </div>
+            )}
+
+            {/* Google Tag (googtag) specific */}
+            {tagType === "googtag" && (
+              <div className="card">
+                <div className="card-title">⚙️ Google Tag Settings</div>
+                <div className="ga4-fields" style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.05em" }}>
+                    ✦ REQUIRED
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Tag ID (Measurement ID) *</label>
+                    <input className="form-input" value={googtagId} onChange={(e) => setGoogtagId(e.target.value)}
+                      placeholder="G-XXXXXXXXXX" style={{ background: "white" }} />
+                    <div className="section-hint" style={{ color: "#005580" }}>
+                      Sent as <code>tagId</code> parameter — your GA4 Measurement ID e.g. G-ABC123XYZ
+                    </div>
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">
+                    Config Parameters <span style={{ color: "var(--text2)", fontWeight: 400 }}>(sent as configSettingsTable LIST)</span>
+                  </label>
+                  <div style={{ fontSize: 11, color: "var(--text2)", marginBottom: 8 }}>
+                    e.g. send_page_view → true, cookie_domain → auto
+                  </div>
+                  {configParams.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input className="form-input" value={p.name}
+                        onChange={(e) => { const n = [...configParams]; n[i].name = e.target.value; setConfigParams(n); }}
+                        placeholder="parameter e.g. send_page_view" style={{ flex: 1 }} />
+                      <input className="form-input" value={p.value}
+                        onChange={(e) => { const n = [...configParams]; n[i].value = e.target.value; setConfigParams(n); }}
+                        placeholder="value e.g. true" style={{ flex: 1 }} />
+                      <button className="btn btn-secondary" style={{ padding: "0 10px", flexShrink: 0 }}
+                        onClick={() => setConfigParams(configParams.filter((_, j) => j !== i))}>✕</button>
+                    </div>
+                  ))}
+                  <button className="btn btn-secondary" onClick={() => setConfigParams([...configParams, { name: "", value: "" }])}>+ Add config param</button>
+                </div>
               </div>
             )}
 

@@ -64,13 +64,29 @@ export async function POST(req) {
       const results = [];
       for (const event of payload.events) {
         const built = GTM.buildPayloadsFromEvent(event);
+
+        // 1. Create trigger first so we get its ID
+        let triggerId = null;
         for (const trig of built.triggers) {
           const r = await GTM.createTrigger(token, path, trig);
+          triggerId = r.triggerId;
           results.push({ type: "trigger", name: trig.name, id: r.triggerId });
         }
+
+        // 2. Create variables
         for (const v of built.variables) {
           const r = await GTM.createVariable(token, path, v);
           results.push({ type: "variable", name: v.name, id: r.variableId });
+        }
+
+        // 3. Create tag — inject the trigger ID we just got
+        for (const tag of built.tags) {
+          const tagWithTrigger = {
+            ...tag,
+            firingTriggerId: triggerId ? [triggerId] : [],
+          };
+          const r = await GTM.createTag(token, path, tagWithTrigger);
+          results.push({ type: "tag", name: tag.name, id: r.tagId, url: r.tagManagerUrl });
         }
       }
       return Response.json({ created: results });

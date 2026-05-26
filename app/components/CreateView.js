@@ -92,8 +92,9 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
   const [newTrigEventName, setNewTrigEventName]  = useState("");
 
   // ── Google Tag (gtag_config) state ────────────────────────────────────────
-  const [gtagType,   setGtagType]   = useState("googtag");  // googtag | gaawc | awct | flc
-  const [gtagParams, setGtagParams] = useState([{ key: "", value: "" }]);
+  const [gtagType,     setGtagType]     = useState("googtag");
+  const [gtagConfigId, setGtagConfigId] = useState("");   // e.g. G-XXXXXXXX or AW-XXXXXXXX
+  const [gtagParams,   setGtagParams]   = useState([{ key: "", value: "" }]);
 
   // ── Trigger state (standalone) ────────────────────────────────────────────
   const [trigName,      setTrigName]      = useState("");
@@ -128,10 +129,14 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
     try {
       // ── GOOGLE TAG ──────────────────────────────────────────────────────
       if (entityType === "googletag") {
+        if (!gtagConfigId.trim()) throw new Error("Config ID (Measurement ID) is required");
         const parameter = gtagParams
           .filter((p) => p.key && p.value)
           .map((p) => ({ type: "template", key: p.key, value: p.value }));
-        const d = await post({ action: "createGtagConfig", payload: { type: gtagType, parameter } });
+        const d = await post({
+          action: "createGtagConfig",
+          payload: { type: gtagType, gtagConfigId: gtagConfigId.trim(), parameter },
+        });
         setResult({ type: "single", entity: "Google Tag Config", data: d });
         return;
       }
@@ -262,7 +267,7 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
   // ── Live preview ───────────────────────────────────────────────────────────
   const previewPayload =
     entityType === "googletag"
-      ? { type: gtagType, parameter: gtagParams.filter((p) => p.key) }
+      ? { type: gtagType, gtagConfigId: gtagConfigId || "(required)", parameter: gtagParams.filter((p) => p.key) }
       : entityType === "tag"
       ? {
           name: tagName, type: tagType,
@@ -306,12 +311,12 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
             <div className="card-title">⚙️ Google Tag Configuration</div>
 
             <div className="alert alert-info" style={{ marginBottom: 16 }}>
-              Google Tag configs link your container to GA4, Google Ads, or other Google products. This creates a <code>gtag_config</code> entity (not a Tag).
+              Google Tag configs link your container to GA4, Google Ads, or other Google products. Creates a <code>gtag_config</code> entity — not a Tag.
             </div>
 
             <div className="form-group">
               <label className="form-label">Config Type</label>
-              <select className="form-select" value={gtagType} onChange={(e) => setGtagType(e.target.value)}>
+              <select className="form-select" value={gtagType} onChange={(e) => { setGtagType(e.target.value); setGtagConfigId(""); }}>
                 <option value="googtag">Google Tag (googtag)</option>
                 <option value="gaawc">GA4 Configuration (gaawc)</option>
                 <option value="awct">Google Ads Conversion Tracking (awct)</option>
@@ -319,25 +324,56 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
               </select>
             </div>
 
-            {/* Dynamic hint per type */}
+            {/* Config ID — required, maps to gtagConfigId in API */}
             <div className="ga4-fields" style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.05em" }}>
-                ✦ {gtagType === "googtag" ? "GOOGLE TAG PARAMS" : gtagType === "gaawc" ? "GA4 CONFIG PARAMS" : gtagType === "awct" ? "GOOGLE ADS PARAMS" : "FLOODLIGHT PARAMS"}
+                ✦ CONFIG ID (REQUIRED)
               </div>
-              <div style={{ fontSize: 11, color: "#005580", marginBottom: 12 }}>
-                {gtagType === "googtag" && "Key param: measurement_id (e.g. G-XXXXXXXX)"}
-                {gtagType === "gaawc"   && "Key param: measurement_id, send_page_view (true/false)"}
-                {gtagType === "awct"    && "Key params: conversion_id, conversion_label, conversion_value"}
-                {gtagType === "flc"     && "Key params: advertiser_id, group_tag_string, counting_method"}
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">
+                  {gtagType === "googtag" && "Measurement ID *"}
+                  {gtagType === "gaawc"   && "GA4 Measurement ID *"}
+                  {gtagType === "awct"    && "Google Ads Conversion ID *"}
+                  {gtagType === "flc"     && "Floodlight Advertiser ID *"}
+                </label>
+                <input
+                  className="form-input"
+                  value={gtagConfigId}
+                  onChange={(e) => setGtagConfigId(e.target.value)}
+                  placeholder={
+                    gtagType === "googtag" ? "G-XXXXXXXXXX" :
+                    gtagType === "gaawc"   ? "G-XXXXXXXXXX" :
+                    gtagType === "awct"    ? "AW-XXXXXXXXXX" :
+                                            "DC-XXXXXXXXXX"
+                  }
+                  style={{ background: "white" }}
+                />
+                <div className="section-hint" style={{ color: "#005580" }}>
+                  {gtagType === "googtag" && "This is your GA4 or Google Tag measurement ID — e.g. G-ABC123XYZ"}
+                  {gtagType === "gaawc"   && "Your GA4 property measurement ID — e.g. G-ABC123XYZ"}
+                  {gtagType === "awct"    && "Your Google Ads account conversion ID — e.g. AW-123456789"}
+                  {gtagType === "flc"     && "Your Floodlight advertiser ID — e.g. DC-123456789"}
+                </div>
+              </div>
+            </div>
+
+            {/* Additional parameters */}
+            <div className="form-group">
+              <label className="form-label">Additional Parameters <span style={{ color: "var(--text2)", fontWeight: 400 }}>(optional)</span></label>
+              <div style={{ fontSize: 11, color: "#005580", marginBottom: 10 }}>
+                {gtagType === "googtag" && "e.g. send_page_view → true, cookie_domain → auto"}
+                {gtagType === "gaawc"   && "e.g. send_page_view → true, cookie_expires → 63072000"}
+                {gtagType === "awct"    && "e.g. conversion_label → XXXXXXXXXXX, conversion_value → {{Order Value}}"}
+                {gtagType === "flc"     && "e.g. group_tag_string → my-group, counting_method → STANDARD"}
               </div>
               {gtagParams.map((p, i) => (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <input className="form-input" value={p.key}
                     onChange={(e) => { const n = [...gtagParams]; n[i].key = e.target.value; setGtagParams(n); }}
-                    placeholder="parameter key" style={{ flex: 1, background: "white" }} />
+                    placeholder="parameter key" style={{ flex: 1 }} />
                   <input className="form-input" value={p.value}
                     onChange={(e) => { const n = [...gtagParams]; n[i].value = e.target.value; setGtagParams(n); }}
-                    placeholder="value" style={{ flex: 1, background: "white" }} />
+                    placeholder="value" style={{ flex: 1 }} />
                   <button className="btn btn-secondary" style={{ padding: "0 10px", flexShrink: 0 }}
                     onClick={() => setGtagParams(gtagParams.filter((_, j) => j !== i))}>✕</button>
                 </div>

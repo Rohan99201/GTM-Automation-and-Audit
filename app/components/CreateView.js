@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { parseDataLayerDoc } from "../../lib/gtmClient";
@@ -21,6 +21,14 @@ export default function CreateView({ accountId, containerId, workspaceId }) {
     return d;
   }
 
+  async function gtmGet(params) {
+    const qs = new URLSearchParams({ ...params, accountId, containerId, workspaceId }).toString();
+    const r = await fetch(`/api/gtm?${qs}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    return d;
+  }
+
   return (
     <div>
       <div className="tabs">
@@ -36,7 +44,7 @@ export default function CreateView({ accountId, containerId, workspaceId }) {
       {result && <ResultPanel result={result} />}
 
       {mode === "manual" && (
-        <ManualCreate post={post} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />
+        <ManualCreate post={post} gtmGet={gtmGet} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />
       )}
       {mode === "datalayer" && (
         <DataLayerUpload post={post} setResult={setResult} setError={setError} setLoading={setLoading} loading={loading} />
@@ -46,30 +54,66 @@ export default function CreateView({ accountId, containerId, workspaceId }) {
 }
 
 // ── Manual Create ──────────────────────────────────────────────────────────
-function ManualCreate({ post, setResult, setError, setLoading, loading }) {
+function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }) {
   const [entityType, setEntityType] = useState("tag");
 
   // Tag state
-  const [tagName, setTagName] = useState("");
-  const [tagType, setTagType] = useState("gaawe");
-  const [triggerId, setTriggerId] = useState("");
-  const [tagParams, setTagParams] = useState([{ key: "", value: "" }]);
+  const [tagName, setTagName]       = useState("");
+  const [tagType, setTagType]       = useState("gaawe");
+  const [tagNotes, setTagNotes]     = useState("");
+
   // GA4 specific
   const [measurementId, setMeasurementId] = useState("");
-  const [ga4EventName, setGa4EventName] = useState("");
+  const [ga4EventName, setGa4EventName]   = useState("");
+  const [sendEcommerce, setSendEcommerce] = useState(false);
+  // GA4 event parameters — stored as {name, value} rows, serialised to eventSettingsTable LIST
+  const [eventParams, setEventParams] = useState([{ name: "", value: "" }]);
+
   // UA specific
   const [trackingId, setTrackingId] = useState("");
-  const [trackType, setTrackType] = useState("TRACK_EVENT");
+  const [trackType, setTrackType]   = useState("TRACK_EVENT");
+
+  // Custom HTML
+  const [htmlContent, setHtmlContent] = useState("");
+
+  // Trigger
+  const [availableTriggers, setAvailableTriggers] = useState([]);
+  const [selectedTriggerIds, setSelectedTriggerIds] = useState([]);
+  const [triggersLoading, setTriggersLoading] = useState(false);
+
+  // Consent
+  const [consentStatus, setConsentStatus] = useState("notSet"); // notSet | notNeeded | needed
+  const [consentTypes, setConsentTypes]   = useState(""); // comma-separated
+
+  // Tag firing option
+  const [firingOption, setFiringOption] = useState("unlimited");
 
   // Trigger state
-  const [trigName, setTrigName] = useState("");
-  const [trigType, setTrigType] = useState("customEvent");
+  const [trigName, setTrigName]         = useState("");
+  const [trigType, setTrigType]         = useState("customEvent");
   const [trigEventName, setTrigEventName] = useState("");
 
   // Variable state
   const [varName, setVarName] = useState("");
   const [varType, setVarType] = useState("v");
-  const [dlvKey, setDlvKey] = useState("");
+  const [dlvKey, setDlvKey]   = useState("");
+
+  // Load triggers when on tag mode
+  useEffect(() => {
+    if (entityType === "tag") {
+      setTriggersLoading(true);
+      gtmGet({ action: "triggers" })
+        .then((d) => setAvailableTriggers(d.trigger || []))
+        .catch(() => {})
+        .finally(() => setTriggersLoading(false));
+    }
+  }, [entityType]);
+
+  function toggleTrigger(id) {
+    setSelectedTriggerIds((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+  }
 
   async function handleSubmit() {
     setError(""); setResult(null); setLoading(true);
@@ -81,36 +125,71 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
         let builtParams = [];
 
         if (tagType === "gaawe") {
-          // GA4 Event Tag — measurementId and eventName are required
-          if (!measurementId) throw new Error("Measurement ID is required for GA4 Event tags");
-          if (!ga4EventName) throw new Error("Event Name is required for GA4 Event tags");
+          if (!measurementId) throw new Error("Measurement ID is required for GA4 tags");
+          if (!ga4EventName)  throw new Error("Event Name is required for GA4 tags");
+
+          // Core GA4 params
           builtParams = [
             { type: "template", key: "measurementIdOverride", value: measurementId },
-            { type: "template", key: "eventName", value: ga4EventName },
-            ...tagParams.filter((p) => p.key && p.value).map((p) => ({
-              type: "template", key: p.key, value: p.value,
-            })),
+            { type: "template", key: "eventName",             value: ga4EventName  },
           ];
+
+          // Event parameters → must be nested in eventSettingsTable as a LIST of MAPs
+          const validParams = eventParams.filter((p) => p.name && p.value);
+          if (validParams.length > 0) {
+            builtParams.push({
+              type: "list",
+              key: "eventSettingsTable",
+              list: validParams.map((p) => ({
+                type: "map",
+                map: [
+                  { type: "template", key: "parameter", value: p.name  },
+                  { type: "template", key: "parameterValue", value: p.value },
+                ],
+              })),
+            });
+          }
+
+          // Send ecommerce data
+          if (sendEcommerce) {
+            builtParams.push({ type: "boolean", key: "sendEcommerceData", value: "true" });
+            builtParams.push({ type: "template", key: "ecommerceMacroData", value: "{{dlv - ecommerce}}" });
+          }
+
         } else if (tagType === "ua") {
           if (!trackingId) throw new Error("Tracking ID is required for Universal Analytics tags");
           builtParams = [
             { type: "template", key: "trackingId", value: trackingId },
-            { type: "template", key: "trackType", value: trackType },
-            ...tagParams.filter((p) => p.key && p.value).map((p) => ({
-              type: "template", key: p.key, value: p.value,
-            })),
+            { type: "template", key: "trackType",  value: trackType  },
           ];
-        } else {
-          builtParams = tagParams
-            .filter((p) => p.key && p.value)
-            .map((p) => ({ type: "template", key: p.key, value: p.value }));
+        } else if (tagType === "html") {
+          if (!htmlContent) throw new Error("HTML content is required");
+          builtParams = [
+            { type: "template", key: "html", value: htmlContent },
+            { type: "boolean",  key: "supportDocumentWrite", value: "false" },
+          ];
+        }
+
+        // Consent settings
+        const consentSettings = { consentStatus };
+        if (consentStatus === "needed" && consentTypes.trim()) {
+          consentSettings.consentType = {
+            type: "list",
+            list: consentTypes.split(",").map((t) => ({
+              type: "map",
+              map: [{ type: "template", key: "consentType", value: t.trim() }],
+            })),
+          };
         }
 
         payload = {
           name: tagName,
           type: tagType,
           parameter: builtParams,
-          ...(triggerId ? { firingTriggerId: [triggerId] } : {}),
+          tagFiringOption: firingOption,
+          consentSettings,
+          ...(tagNotes ? { notes: tagNotes } : {}),
+          ...(selectedTriggerIds.length ? { firingTriggerId: selectedTriggerIds } : {}),
         };
 
       } else if (entityType === "trigger") {
@@ -132,9 +211,9 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           type: varType,
           parameter: varType === "v"
             ? [
-                { type: "integer", key: "dataLayerVersion", value: "2" },
-                { type: "boolean", key: "setDefaultValue", value: "false" },
-                { type: "template", key: "name", value: dlvKey },
+                { type: "integer",  key: "dataLayerVersion", value: "2"     },
+                { type: "boolean",  key: "setDefaultValue",  value: "false" },
+                { type: "template", key: "name",             value: dlvKey  },
               ]
             : [],
         };
@@ -149,24 +228,30 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
     }
   }
 
-  // Build live preview payload
-  const previewPayload = entityType === "tag"
-    ? {
-        name: tagName,
-        type: tagType,
-        ...(tagType === "gaawe" ? { measurementIdOverride: measurementId, eventName: ga4EventName } : {}),
-        ...(tagType === "ua" ? { trackingId, trackType } : {}),
-        firingTriggerId: triggerId ? [triggerId] : [],
-        parameter: tagParams.filter((p) => p.key),
-      }
-    : entityType === "trigger"
-    ? { name: trigName, type: trigType, ...(trigType === "customEvent" ? { customEventFilter: trigEventName } : {}) }
-    : { name: varName, type: varType, ...(varType === "v" ? { dataLayerKey: dlvKey } : {}) };
+  // Live preview
+  const previewPayload =
+    entityType === "tag"
+      ? {
+          name: tagName, type: tagType,
+          ...(tagType === "gaawe" ? {
+            measurementIdOverride: measurementId,
+            eventName: ga4EventName,
+            eventSettingsTable: eventParams.filter((p) => p.name).map((p) => ({ parameter: p.name, parameterValue: p.value })),
+            sendEcommerceData: sendEcommerce,
+          } : {}),
+          ...(tagType === "ua" ? { trackingId, trackType } : {}),
+          firingTriggerId: selectedTriggerIds,
+          consentSettings: { consentStatus },
+          tagFiringOption: firingOption,
+        }
+      : entityType === "trigger"
+      ? { name: trigName, type: trigType, ...(trigType === "customEvent" ? { eventName: trigEventName } : {}) }
+      : { name: varName, type: varType, ...(varType === "v" ? { dataLayerKey: dlvKey } : {}) };
 
   return (
     <div className="grid-2" style={{ alignItems: "start" }}>
       <div>
-        {/* Entity type selector */}
+        {/* Entity type */}
         <div className="card">
           <div className="card-title">📦 Entity Type</div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -178,88 +263,191 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           </div>
         </div>
 
-        {/* TAG form */}
+        {/* ── TAG FORM ── */}
         {entityType === "tag" && (
-          <div className="card">
-            <div className="card-title">🏷️ Tag Configuration</div>
+          <>
+            <div className="card">
+              <div className="card-title">🏷️ Tag Configuration</div>
 
-            <div className="form-group">
-              <label className="form-label">Tag Name *</label>
-              <input className="form-input" value={tagName} onChange={(e) => setTagName(e.target.value)} placeholder="e.g. GA4 - Purchase Event" />
+              <div className="form-group">
+                <label className="form-label">Tag Name *</label>
+                <input className="form-input" value={tagName} onChange={(e) => setTagName(e.target.value)} placeholder="e.g. GA4 - Purchase Event" />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Tag Type</label>
+                <select className="form-select" value={tagType} onChange={(e) => setTagType(e.target.value)}>
+                  <option value="gaawe">GA4 Event</option>
+                  <option value="ua">Universal Analytics</option>
+                  <option value="html">Custom HTML</option>
+                  <option value="img">Custom Image</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Tag Firing Option</label>
+                <select className="form-select" value={firingOption} onChange={(e) => setFiringOption(e.target.value)}>
+                  <option value="unlimited">Unlimited (fire multiple times per event)</option>
+                  <option value="oncePerEvent">Once Per Event</option>
+                  <option value="oncePerLoad">Once Per Load</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notes (optional)</label>
+                <input className="form-input" value={tagNotes} onChange={(e) => setTagNotes(e.target.value)} placeholder="Add a note for your team…" />
+              </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label">Tag Type</label>
-              <select className="form-select" value={tagType} onChange={(e) => setTagType(e.target.value)}>
-                <option value="gaawe">GA4 Event</option>
-                <option value="ua">Universal Analytics</option>
-                <option value="html">Custom HTML</option>
-                <option value="img">Custom Image</option>
-              </select>
-            </div>
-
-            {/* GA4-specific required fields */}
+            {/* GA4 fields */}
             {tagType === "gaawe" && (
-              <div className="ga4-fields">
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
-                  ✦ GA4 REQUIRED FIELDS
+              <div className="card">
+                <div className="card-title" style={{ color: "#003355" }}>✦ GA4 Event Settings</div>
+
+                <div className="ga4-fields" style={{ marginBottom: 16 }}>
+                  <div className="form-group" style={{ marginBottom: 12 }}>
+                    <label className="form-label">Measurement ID *</label>
+                    <input className="form-input" value={measurementId} onChange={(e) => setMeasurementId(e.target.value)} placeholder="G-XXXXXXXXXX or {{GA4 Measurement ID}}" />
+                    <div className="section-hint">Your GA4 property ID or a GTM variable reference</div>
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Event Name *</label>
+                    <input className="form-input" value={ga4EventName} onChange={(e) => setGa4EventName(e.target.value)} placeholder="e.g. purchase or {{Event}}" />
+                    <div className="section-hint">Use {"{{Event}}"} to dynamically pass the datalayer event name</div>
+                  </div>
                 </div>
-                <div className="form-group" style={{ marginBottom: 12 }}>
-                  <label className="form-label">Measurement ID *</label>
-                  <input className="form-input" value={measurementId} onChange={(e) => setMeasurementId(e.target.value)} placeholder="G-XXXXXXXXXX or {{GA4 Measurement ID}}" />
-                  <div className="section-hint">Your GA4 property ID — e.g. G-ABC123XYZ or a GTM variable</div>
+
+                {/* Event Parameters */}
+                <div className="form-group">
+                  <label className="form-label">Event Parameters <span style={{ color: "var(--text2)", fontWeight: 400 }}>(sent as eventSettingsTable)</span></label>
+                  {eventParams.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input
+                        className="form-input" value={p.name}
+                        onChange={(e) => { const n = [...eventParams]; n[i].name = e.target.value; setEventParams(n); }}
+                        placeholder="parameter name (e.g. transaction_id)" style={{ flex: 1 }}
+                      />
+                      <input
+                        className="form-input" value={p.value}
+                        onChange={(e) => { const n = [...eventParams]; n[i].value = e.target.value; setEventParams(n); }}
+                        placeholder="value or {{Variable}}" style={{ flex: 1 }}
+                      />
+                      <button className="btn btn-secondary" style={{ padding: "0 10px", flexShrink: 0 }} onClick={() => setEventParams(eventParams.filter((_, j) => j !== i))}>✕</button>
+                    </div>
+                  ))}
+                  <button className="btn btn-secondary" onClick={() => setEventParams([...eventParams, { name: "", value: "" }])}>+ Add parameter</button>
                 </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Event Name *</label>
-                  <input className="form-input" value={ga4EventName} onChange={(e) => setGa4EventName(e.target.value)} placeholder="e.g. purchase or {{Event}}" />
-                  <div className="section-hint">The GA4 event name to send — use {"{{Event}}"} to pass the datalayer event</div>
-                </div>
+
+                {/* Send ecommerce */}
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 12px", background: sendEcommerce ? "var(--highlight)" : "var(--bg)", border: "1.5px solid", borderColor: sendEcommerce ? "var(--highlight-border)" : "var(--border)", borderRadius: "var(--radius)", transition: "all 0.15s" }}>
+                  <input
+                    type="checkbox" checked={sendEcommerce} onChange={(e) => setSendEcommerce(e.target.checked)}
+                    style={{ width: 16, height: 16, accentColor: "var(--accent2)", cursor: "pointer" }}
+                  />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: sendEcommerce ? "#003355" : "var(--text)" }}>Send Ecommerce Data</div>
+                    <div style={{ fontSize: 11, color: sendEcommerce ? "#005588" : "var(--text2)" }}>Reads from dataLayer ecommerce object — adds sendEcommerceData: true</div>
+                  </div>
+                </label>
               </div>
             )}
 
-            {/* UA-specific required fields */}
+            {/* UA fields */}
             {tagType === "ua" && (
-              <div className="ga4-fields">
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
-                  ✦ UA REQUIRED FIELDS
-                </div>
-                <div className="form-group" style={{ marginBottom: 12 }}>
-                  <label className="form-label">Tracking ID *</label>
-                  <input className="form-input" value={trackingId} onChange={(e) => setTrackingId(e.target.value)} placeholder="UA-XXXXXXXX-X" />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Track Type</label>
-                  <select className="form-select" value={trackType} onChange={(e) => setTrackType(e.target.value)} style={{ background: "white" }}>
-                    <option value="TRACK_EVENT">Event</option>
-                    <option value="TRACK_PAGEVIEW">Page View</option>
-                    <option value="TRACK_TRANSACTION">Transaction</option>
-                    <option value="TRACK_SOCIAL">Social</option>
-                  </select>
+              <div className="card">
+                <div className="card-title">✦ Universal Analytics Settings</div>
+                <div className="ga4-fields">
+                  <div className="form-group" style={{ marginBottom: 12 }}>
+                    <label className="form-label">Tracking ID *</label>
+                    <input className="form-input" value={trackingId} onChange={(e) => setTrackingId(e.target.value)} placeholder="UA-XXXXXXXX-X" />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Track Type</label>
+                    <select className="form-select" value={trackType} onChange={(e) => setTrackType(e.target.value)} style={{ background: "white" }}>
+                      <option value="TRACK_EVENT">Event</option>
+                      <option value="TRACK_PAGEVIEW">Page View</option>
+                      <option value="TRACK_TRANSACTION">Transaction</option>
+                      <option value="TRACK_SOCIAL">Social</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             )}
 
-            <div className="form-group">
-              <label className="form-label">Firing Trigger ID (optional)</label>
-              <input className="form-input" value={triggerId} onChange={(e) => setTriggerId(e.target.value)} placeholder="e.g. 12345678" />
-              <div className="section-hint">Get trigger IDs from the Audit tab → Triggers</div>
+            {/* Custom HTML */}
+            {tagType === "html" && (
+              <div className="card">
+                <div className="card-title">✦ Custom HTML</div>
+                <div className="form-group">
+                  <label className="form-label">HTML Content *</label>
+                  <textarea className="form-textarea" value={htmlContent} onChange={(e) => setHtmlContent(e.target.value)} placeholder={"<script>\n  // your code here\n</script>"} style={{ minHeight: 120, fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                </div>
+              </div>
+            )}
+
+            {/* Trigger selector */}
+            <div className="card">
+              <div className="card-title">⚡ Firing Triggers</div>
+              {triggersLoading ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text2)", fontSize: 13 }}>
+                  <span className="spinner" /> Loading triggers…
+                </div>
+              ) : availableTriggers.length === 0 ? (
+                <div style={{ color: "var(--text2)", fontSize: 13 }}>No triggers found in this workspace. Create one first.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+                  {availableTriggers.map((tr) => {
+                    const selected = selectedTriggerIds.includes(tr.triggerId);
+                    return (
+                      <label key={tr.triggerId} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "9px 12px", background: selected ? "var(--highlight)" : "var(--bg)", border: "1.5px solid", borderColor: selected ? "var(--highlight-border)" : "var(--border)", borderRadius: "var(--radius)", transition: "all 0.12s" }}>
+                        <input type="checkbox" checked={selected} onChange={() => toggleTrigger(tr.triggerId)} style={{ width: 15, height: 15, accentColor: "var(--accent2)", cursor: "pointer" }} />
+                        <div style={{ flex: 1 }}>
+                          <span style={{ fontSize: 13, fontWeight: selected ? 500 : 400, color: selected ? "#003355" : "var(--text)" }}>{tr.name}</span>
+                          <span className="badge badge-neutral" style={{ marginLeft: 8, fontSize: 10 }}>{tr.type}</span>
+                        </div>
+                        <span style={{ fontSize: 11, color: "var(--text2)", fontFamily: "var(--font-mono)" }}>#{tr.triggerId}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedTriggerIds.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--accent2)" }}>
+                  ✓ {selectedTriggerIds.length} trigger{selectedTriggerIds.length > 1 ? "s" : ""} selected
+                </div>
+              )}
             </div>
 
-            <div className="form-group">
-              <label className="form-label">Additional Parameters</label>
-              {tagParams.map((p, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                  <input className="form-input" value={p.key} onChange={(e) => { const n = [...tagParams]; n[i].key = e.target.value; setTagParams(n); }} placeholder="key" style={{ flex: 1 }} />
-                  <input className="form-input" value={p.value} onChange={(e) => { const n = [...tagParams]; n[i].value = e.target.value; setTagParams(n); }} placeholder="value" style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" style={{ padding: "0 10px" }} onClick={() => setTagParams(tagParams.filter((_, j) => j !== i))}>✕</button>
+            {/* Consent settings */}
+            <div className="card">
+              <div className="card-title">🔒 Consent Settings</div>
+              <div className="form-group">
+                <label className="form-label">Consent Status</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[
+                    { val: "notSet",     label: "Not Set",     hint: "Default" },
+                    { val: "notNeeded",  label: "Not Needed",  hint: "No consent check" },
+                    { val: "needed",     label: "Needed",      hint: "Requires consent" },
+                  ].map(({ val, label, hint }) => (
+                    <button key={val} onClick={() => setConsentStatus(val)} style={{ flex: 1, padding: "10px 8px", borderRadius: "var(--radius)", border: "1.5px solid", borderColor: consentStatus === val ? "var(--highlight-border)" : "var(--border)", background: consentStatus === val ? "var(--highlight)" : "var(--surface)", cursor: "pointer", transition: "all 0.12s" }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: consentStatus === val ? "#003355" : "var(--text)" }}>{label}</div>
+                      <div style={{ fontSize: 10, color: consentStatus === val ? "#005580" : "var(--text2)", marginTop: 2 }}>{hint}</div>
+                    </button>
+                  ))}
                 </div>
-              ))}
-              <button className="btn btn-secondary" onClick={() => setTagParams([...tagParams, { key: "", value: "" }])}>+ Add param</button>
+              </div>
+              {consentStatus === "needed" && (
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Consent Types (comma-separated)</label>
+                  <input className="form-input" value={consentTypes} onChange={(e) => setConsentTypes(e.target.value)} placeholder="e.g. ad_storage, analytics_storage" />
+                  <div className="section-hint">Standard types: ad_storage, analytics_storage, ad_personalization, ad_user_data</div>
+                </div>
+              )}
             </div>
-          </div>
+          </>
         )}
 
-        {/* TRIGGER form */}
+        {/* ── TRIGGER FORM ── */}
         {entityType === "trigger" && (
           <div className="card">
             <div className="card-title">⚡ Trigger Configuration</div>
@@ -285,20 +473,18 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
             </div>
             {trigType === "customEvent" && (
               <div className="ga4-fields">
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
-                  ✦ CUSTOM EVENT SETTINGS
-                </div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>✦ CUSTOM EVENT SETTINGS</div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">DataLayer Event Name *</label>
                   <input className="form-input" value={trigEventName} onChange={(e) => setTrigEventName(e.target.value)} placeholder="e.g. purchase" />
-                  <div className="section-hint">Matches the event name pushed to dataLayer</div>
+                  <div className="section-hint">Must match the event name pushed to dataLayer exactly</div>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* VARIABLE form */}
+        {/* ── VARIABLE FORM ── */}
         {entityType === "variable" && (
           <div className="card">
             <div className="card-title">📐 Variable Configuration</div>
@@ -333,7 +519,7 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
         </button>
       </div>
 
-      {/* Right: Preview + reference */}
+      {/* ── RIGHT: Preview + reference ── */}
       <div>
         <div className="card">
           <div className="card-title">👁️ Live Payload Preview</div>
@@ -344,20 +530,26 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           <div className="card-title" style={{ color: "#003355" }}>📖 GTM Type Reference</div>
           <div style={{ fontSize: 12, color: "#003355", lineHeight: 2 }}>
             {[
-              ["gaawe", "GA4 Event Tag"],
-              ["ua", "Universal Analytics Tag"],
-              ["html", "Custom HTML Tag"],
-              ["customEvent", "Custom Event Trigger"],
-              ["pageview", "Page View Trigger"],
-              ["v", "DataLayer Variable (DLV)"],
-              ["k", "1st Party Cookie"],
-              ["jsm", "JavaScript Variable"],
+              ["gaawe",        "GA4 Event Tag"],
+              ["ua",           "Universal Analytics Tag"],
+              ["html",         "Custom HTML Tag"],
+              ["customEvent",  "Custom Event Trigger"],
+              ["pageview",     "Page View Trigger"],
+              ["v",            "DataLayer Variable (DLV)"],
+              ["k",            "1st Party Cookie"],
+              ["jsm",          "JavaScript Variable"],
             ].map(([code, label]) => (
               <div key={code}>
                 <code style={{ background: "white", padding: "1px 5px", borderRadius: 3, fontFamily: "var(--font-mono)", fontSize: 11 }}>{code}</code>
                 <span style={{ marginLeft: 8 }}>→ {label}</span>
               </div>
             ))}
+          </div>
+          <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--highlight-border)" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 6, fontFamily: "var(--font-mono)" }}>EVENT PARAMS NOTE</div>
+            <div style={{ fontSize: 11, color: "#005580", lineHeight: 1.6 }}>
+              GA4 event parameters are sent as <code style={{ background: "white", padding: "1px 4px", borderRadius: 2 }}>eventSettingsTable</code> (LIST of MAPs) — not flat template params. This matches the GTM API spec exactly.
+            </div>
           </div>
         </div>
       </div>
@@ -367,8 +559,8 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
 
 // ── DataLayer Doc Upload ───────────────────────────────────────────────────
 function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
-  const [events, setEvents] = useState([]);
-  const [dragover, setDragover] = useState(false);
+  const [events, setEvents]               = useState([]);
+  const [dragover, setDragover]           = useState(false);
   const [selectedEvents, setSelectedEvents] = useState(new Set());
   const fileRef = useRef();
 
@@ -379,8 +571,7 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
       reader.onload = (e) => {
         const wb = XLSX.read(e.target.result, { type: "array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
-        processRows(data);
+        processRows(XLSX.utils.sheet_to_json(ws, { header: 1 }));
       };
       reader.readAsArrayBuffer(file);
     } else if (ext === "csv") {
@@ -492,18 +683,11 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
       {!events.length && (
         <div className="card" style={{ marginTop: 20 }}>
           <div className="card-title">📋 Sample DataLayer Doc Format</div>
-          <div className="code-block">{`Event Name,Variable Name,Variable Type,Scope,Description
-purchase,transaction_id,dataLayer,hit,Unique order ID
-purchase,revenue,dataLayer,hit,Total revenue
-purchase,currency,dataLayer,hit,Currency code (e.g. GBP)
-add_to_cart,item_id,dataLayer,hit,Product SKU
-add_to_cart,item_name,dataLayer,hit,Product name
-page_view,page_type,dataLayer,session,Type of page`}</div>
+          <div className="code-block">{`Event Name,Variable Name,Variable Type,Scope,Description\npurchase,transaction_id,dataLayer,hit,Unique order ID\npurchase,revenue,dataLayer,hit,Total revenue\npurchase,currency,dataLayer,hit,Currency code (e.g. GBP)\nadd_to_cart,item_id,dataLayer,hit,Product SKU\nadd_to_cart,item_name,dataLayer,hit,Product name\npage_view,page_type,dataLayer,session,Type of page`}</div>
           <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => {
             const csv = `Event Name,Variable Name,Variable Type,Scope,Description\npurchase,transaction_id,dataLayer,hit,Unique order ID\npurchase,revenue,dataLayer,hit,Total revenue\npurchase,currency,dataLayer,hit,Currency code\nadd_to_cart,item_id,dataLayer,hit,Product SKU\nadd_to_cart,item_name,dataLayer,hit,Product name`;
             const blob = new Blob([csv], { type: "text/csv" });
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob); a.download = "datalayer_template.csv"; a.click();
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "datalayer_template.csv"; a.click();
           }}>⬇ Download CSV Template</button>
         </div>
       )}
@@ -517,8 +701,15 @@ function ResultPanel({ result }) {
     return (
       <div className="alert alert-success">
         ✅ <strong>{result.entity}</strong> created successfully in GTM!
+        {result.data?.tagManagerUrl && (
+          <div style={{ marginTop: 6 }}>
+            <a href={result.data.tagManagerUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", fontSize: 12 }}>
+              Open in GTM →
+            </a>
+          </div>
+        )}
         <div style={{ marginTop: 8 }}>
-          <div className="code-block" style={{ maxHeight: 120 }}>{JSON.stringify(result.data, null, 2)}</div>
+          <div className="code-block" style={{ maxHeight: 140 }}>{JSON.stringify(result.data, null, 2)}</div>
         </div>
       </div>
     );

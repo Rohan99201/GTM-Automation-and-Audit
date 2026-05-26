@@ -129,13 +129,25 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
     try {
       // ── GOOGLE TAG ──────────────────────────────────────────────────────
       if (entityType === "googletag") {
-        if (!gtagConfigId.trim()) throw new Error("Config ID (Measurement ID) is required");
-        const parameter = gtagParams
-          .filter((p) => p.key && p.value)
-          .map((p) => ({ type: "template", key: p.key, value: p.value }));
+        if (!gtagConfigId.trim()) throw new Error("Measurement ID is required");
+
+        // gtagConfigId is auto-assigned by GTM — never sent in create.
+        // The Measurement ID (G-XX / AW-XX) goes as a parameter.
+        const measurementKey =
+          gtagType === "awct" ? "conversionId"  :
+          gtagType === "flc"  ? "advertiserId"  :
+                                "measurementId";
+
+        const parameter = [
+          { type: "template", key: measurementKey, value: gtagConfigId.trim() },
+          ...gtagParams
+            .filter((p) => p.key && p.value)
+            .map((p) => ({ type: "template", key: p.key, value: p.value })),
+        ];
+
         const d = await post({
           action: "createGtagConfig",
-          payload: { type: gtagType, gtagConfigId: gtagConfigId.trim(), parameter },
+          payload: { type: gtagType, parameter },   // no gtagConfigId field
         });
         setResult({ type: "single", entity: "Google Tag Config", data: d });
         return;
@@ -267,7 +279,7 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
   // ── Live preview ───────────────────────────────────────────────────────────
   const previewPayload =
     entityType === "googletag"
-      ? { type: gtagType, gtagConfigId: gtagConfigId || "(required)", parameter: gtagParams.filter((p) => p.key) }
+      ? { type: gtagType, parameter: [{ type: "template", key: gtagType === "awct" ? "conversionId" : "measurementId", value: gtagConfigId || "(required)" }, ...gtagParams.filter((p) => p.key)] }
       : entityType === "tag"
       ? {
           name: tagName, type: tagType,
@@ -324,10 +336,13 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
               </select>
             </div>
 
-            {/* Config ID — required, maps to gtagConfigId in API */}
+            {/* Measurement ID — sent as a parameter, NOT as gtagConfigId */}
             <div className="ga4-fields" style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.05em" }}>
-                ✦ CONFIG ID (REQUIRED)
+                ✦ MEASUREMENT ID (REQUIRED)
+              </div>
+              <div className="alert alert-info" style={{ marginBottom: 10, fontSize: 11 }}>
+                This is sent as a <code>parameter</code> in the API — the numeric <code>gtagConfigId</code> is auto-assigned by GTM on creation.
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">
@@ -349,10 +364,10 @@ function ManualCreate({ post, gtmGet, setResult, setError, setLoading, loading }
                   style={{ background: "white" }}
                 />
                 <div className="section-hint" style={{ color: "#005580" }}>
-                  {gtagType === "googtag" && "This is your GA4 or Google Tag measurement ID — e.g. G-ABC123XYZ"}
-                  {gtagType === "gaawc"   && "Your GA4 property measurement ID — e.g. G-ABC123XYZ"}
-                  {gtagType === "awct"    && "Your Google Ads account conversion ID — e.g. AW-123456789"}
-                  {gtagType === "flc"     && "Your Floodlight advertiser ID — e.g. DC-123456789"}
+                  {gtagType === "googtag" && "Sent as measurementId parameter — e.g. G-ABC123XYZ"}
+                  {gtagType === "gaawc"   && "Sent as measurementId parameter — e.g. G-ABC123XYZ"}
+                  {gtagType === "awct"    && "Sent as conversionId parameter — e.g. AW-123456789"}
+                  {gtagType === "flc"     && "Sent as advertiserId parameter — e.g. DC-123456789"}
                 </div>
               </div>
             </div>

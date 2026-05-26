@@ -7,38 +7,28 @@ export async function GET(req) {
   if (!session?.accessToken) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
-  const action = searchParams.get("action");
-  const accountId = searchParams.get("accountId");
+  const action      = searchParams.get("action");
+  const accountId   = searchParams.get("accountId");
   const containerId = searchParams.get("containerId");
   const workspaceId = searchParams.get("workspaceId");
-  const token = session.accessToken;
+  const token       = session.accessToken;
 
   try {
-    if (action === "accounts") {
-      const data = await GTM.listAccounts(token);
-      return Response.json(data);
-    }
-    if (action === "containers") {
-      const data = await GTM.listContainers(token, accountId);
-      return Response.json(data);
-    }
-    if (action === "workspaces") {
-      const data = await GTM.listWorkspaces(token, accountId, containerId);
-      return Response.json(data);
-    }
-    if (action === "audit") {
-      const data = await GTM.runAudit(token, accountId, containerId, workspaceId);
-      return Response.json(data);
-    }
+    if (action === "accounts")   return Response.json(await GTM.listAccounts(token));
+    if (action === "containers") return Response.json(await GTM.listContainers(token, accountId));
+    if (action === "workspaces") return Response.json(await GTM.listWorkspaces(token, accountId, containerId));
+    if (action === "audit")      return Response.json(await GTM.runAudit(token, accountId, containerId, workspaceId));
     if (action === "tags") {
       const path = GTM.wsPath(accountId, containerId, workspaceId);
-      const data = await GTM.listTags(token, path);
-      return Response.json(data);
+      return Response.json(await GTM.listTags(token, path));
     }
     if (action === "triggers") {
       const path = GTM.wsPath(accountId, containerId, workspaceId);
-      const data = await GTM.listTriggers(token, path);
-      return Response.json(data);
+      return Response.json(await GTM.listTriggers(token, path));
+    }
+    if (action === "gtagConfigs") {
+      const path = GTM.wsPath(accountId, containerId, workspaceId);
+      return Response.json(await GTM.listGtagConfigs(token, path));
     }
     return Response.json({ error: "Unknown action" }, { status: 400 });
   } catch (e) {
@@ -51,25 +41,26 @@ export async function POST(req) {
   if (!session?.accessToken) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const token = session.accessToken;
-  const body = await req.json();
+  const body  = await req.json();
   const { action, accountId, containerId, workspaceId, payload } = body;
   const path = GTM.wsPath(accountId, containerId, workspaceId);
 
   try {
-    if (action === "createTag") {
-      const data = await GTM.createTag(token, path, payload);
-      return Response.json(data);
+    if (action === "createTag")      return Response.json(await GTM.createTag(token, path, payload));
+    if (action === "createTrigger")  return Response.json(await GTM.createTrigger(token, path, payload));
+    if (action === "createVariable") return Response.json(await GTM.createVariable(token, path, payload));
+    if (action === "createGtagConfig") return Response.json(await GTM.createGtagConfig(token, path, payload));
+
+    if (action === "createTriggerThenTag") {
+      // 1. Create the inline trigger first
+      const trig = await GTM.createTrigger(token, path, payload.trigger);
+      // 2. Inject the new trigger ID into the tag and create it
+      const tagPayload = { ...payload.tag, firingTriggerId: [...(payload.tag.firingTriggerId || []), trig.triggerId] };
+      const tag = await GTM.createTag(token, path, tagPayload);
+      return Response.json({ trigger: trig, tag });
     }
-    if (action === "createTrigger") {
-      const data = await GTM.createTrigger(token, path, payload);
-      return Response.json(data);
-    }
-    if (action === "createVariable") {
-      const data = await GTM.createVariable(token, path, payload);
-      return Response.json(data);
-    }
+
     if (action === "createFromDataLayer") {
-      // payload.events = array of parsed datalayer events
       const results = [];
       for (const event of payload.events) {
         const built = GTM.buildPayloadsFromEvent(event);
@@ -84,6 +75,7 @@ export async function POST(req) {
       }
       return Response.json({ created: results });
     }
+
     return Response.json({ error: "Unknown action" }, { status: 400 });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });

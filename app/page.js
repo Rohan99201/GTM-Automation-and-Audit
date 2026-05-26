@@ -64,6 +64,12 @@ export default function Home() {
     return (
       <div className="login-page">
         <div className="login-card">
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+            <svg width="52" height="52" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+              <rect width="32" height="32" rx="8" fill="#1a1a0a"/>
+              <text x="16" y="23" fontFamily="Georgia, serif" fontSize="20" fontWeight="700" fill="#b1e8fe" textAnchor="middle">R</text>
+            </svg>
+          </div>
           <div className="logo">▸ GTM AUTOMATION STUDIO</div>
           <h2>Tag Manager Automation</h2>
           <p>Automate tag creation from DataLayer docs & audit your GTM containers — all via the official GTM API.</p>
@@ -98,8 +104,16 @@ export default function Home() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <h1>▸ GTM<br />AUTOMATION</h1>
-          <span>Studio v1.0</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <svg width="36" height="36" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+              <rect width="32" height="32" rx="8" fill="#b1e8fe"/>
+              <text x="16" y="23" fontFamily="Georgia, serif" fontSize="20" fontWeight="700" fill="#1a1a0a" textAnchor="middle">R</text>
+            </svg>
+            <div>
+              <h1 style={{ marginBottom: 0 }}>GTM STUDIO</h1>
+              <span>Automation v1.0</span>
+            </div>
+          </div>
         </div>
 
         <div className="nav-section">

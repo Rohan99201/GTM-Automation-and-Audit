@@ -113,11 +113,11 @@ export default function Home() {
         </div>
 
         <div style={{ marginTop: "auto", padding: "0 12px" }}>
-          <div style={{ padding: "12px", background: "var(--surface2)", borderRadius: "var(--radius)", marginBottom: 8 }}>
-            <div style={{ fontSize: 11, color: "var(--text2)", marginBottom: 4 }}>Signed in as</div>
-            <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.user.email}</div>
+          <div style={{ padding: "12px", background: "#2a2a10", borderRadius: "var(--radius)", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: "#888860", marginBottom: 4 }}>Signed in as</div>
+            <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#fffceb" }}>{session.user.email}</div>
           </div>
-          <button className="nav-btn" onClick={() => signOut()} style={{ color: "var(--error)" }}>
+          <button className="nav-btn" onClick={() => signOut()} style={{ color: "#ff8866" }}>
             <span className="icon">↩</span> Sign out
           </button>
         </div>

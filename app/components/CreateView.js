@@ -2,10 +2,10 @@
 import { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
-import { parseDataLayerDoc, buildPayloadsFromEvent } from "../../lib/gtmClient";
+import { parseDataLayerDoc } from "../../lib/gtmClient";
 
 export default function CreateView({ accountId, containerId, workspaceId }) {
-  const [mode, setMode] = useState("manual"); // "manual" | "datalayer"
+  const [mode, setMode] = useState("manual");
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -51,18 +51,24 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
 
   // Tag state
   const [tagName, setTagName] = useState("");
-  const [tagType, setTagType] = useState("ua"); // ua | gaawe | html | custom
+  const [tagType, setTagType] = useState("gaawe");
   const [triggerId, setTriggerId] = useState("");
   const [tagParams, setTagParams] = useState([{ key: "", value: "" }]);
+  // GA4 specific
+  const [measurementId, setMeasurementId] = useState("");
+  const [ga4EventName, setGa4EventName] = useState("");
+  // UA specific
+  const [trackingId, setTrackingId] = useState("");
+  const [trackType, setTrackType] = useState("TRACK_EVENT");
 
   // Trigger state
   const [trigName, setTrigName] = useState("");
   const [trigType, setTrigType] = useState("customEvent");
-  const [eventName, setEventName] = useState("");
+  const [trigEventName, setTrigEventName] = useState("");
 
   // Variable state
   const [varName, setVarName] = useState("");
-  const [varType, setVarType] = useState("v"); // v=DLV, k=1stparty, jsm=JS var
+  const [varType, setVarType] = useState("v");
   const [dlvKey, setDlvKey] = useState("");
 
   async function handleSubmit() {
@@ -72,22 +78,51 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
 
       if (entityType === "tag") {
         action = "createTag";
-        const parameters = tagParams
-          .filter((p) => p.key && p.value)
-          .map((p) => ({ type: "template", key: p.key, value: p.value }));
+        let builtParams = [];
+
+        if (tagType === "gaawe") {
+          // GA4 Event Tag — measurementId and eventName are required
+          if (!measurementId) throw new Error("Measurement ID is required for GA4 Event tags");
+          if (!ga4EventName) throw new Error("Event Name is required for GA4 Event tags");
+          builtParams = [
+            { type: "template", key: "measurementIdOverride", value: measurementId },
+            { type: "template", key: "eventName", value: ga4EventName },
+            ...tagParams.filter((p) => p.key && p.value).map((p) => ({
+              type: "template", key: p.key, value: p.value,
+            })),
+          ];
+        } else if (tagType === "ua") {
+          if (!trackingId) throw new Error("Tracking ID is required for Universal Analytics tags");
+          builtParams = [
+            { type: "template", key: "trackingId", value: trackingId },
+            { type: "template", key: "trackType", value: trackType },
+            ...tagParams.filter((p) => p.key && p.value).map((p) => ({
+              type: "template", key: p.key, value: p.value,
+            })),
+          ];
+        } else {
+          builtParams = tagParams
+            .filter((p) => p.key && p.value)
+            .map((p) => ({ type: "template", key: p.key, value: p.value }));
+        }
+
         payload = {
           name: tagName,
           type: tagType,
-          parameter: parameters,
+          parameter: builtParams,
           ...(triggerId ? { firingTriggerId: [triggerId] } : {}),
         };
+
       } else if (entityType === "trigger") {
         action = "createTrigger";
         payload = {
           name: trigName,
           type: trigType,
-          ...(trigType === "customEvent" && eventName
-            ? { customEventFilter: [{ type: "equals", parameter: [{ type: "template", key: "arg0", value: "{{_event}}" }, { type: "template", key: "arg1", value: eventName }] }] }
+          ...(trigType === "customEvent" && trigEventName
+            ? { customEventFilter: [{ type: "equals", parameter: [
+                { type: "template", key: "arg0", value: "{{_event}}" },
+                { type: "template", key: "arg1", value: trigEventName },
+              ]}] }
             : {}),
         };
       } else {
@@ -96,7 +131,11 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           name: varName,
           type: varType,
           parameter: varType === "v"
-            ? [{ type: "integer", key: "dataLayerVersion", value: "2" }, { type: "boolean", key: "setDefaultValue", value: "false" }, { type: "template", key: "name", value: dlvKey }]
+            ? [
+                { type: "integer", key: "dataLayerVersion", value: "2" },
+                { type: "boolean", key: "setDefaultValue", value: "false" },
+                { type: "template", key: "name", value: dlvKey },
+              ]
             : [],
         };
       }
@@ -110,9 +149,24 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
     }
   }
 
+  // Build live preview payload
+  const previewPayload = entityType === "tag"
+    ? {
+        name: tagName,
+        type: tagType,
+        ...(tagType === "gaawe" ? { measurementIdOverride: measurementId, eventName: ga4EventName } : {}),
+        ...(tagType === "ua" ? { trackingId, trackType } : {}),
+        firingTriggerId: triggerId ? [triggerId] : [],
+        parameter: tagParams.filter((p) => p.key),
+      }
+    : entityType === "trigger"
+    ? { name: trigName, type: trigType, ...(trigType === "customEvent" ? { customEventFilter: trigEventName } : {}) }
+    : { name: varName, type: varType, ...(varType === "v" ? { dataLayerKey: dlvKey } : {}) };
+
   return (
     <div className="grid-2" style={{ alignItems: "start" }}>
       <div>
+        {/* Entity type selector */}
         <div className="card">
           <div className="card-title">📦 Entity Type</div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -124,13 +178,16 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           </div>
         </div>
 
+        {/* TAG form */}
         {entityType === "tag" && (
           <div className="card">
             <div className="card-title">🏷️ Tag Configuration</div>
+
             <div className="form-group">
               <label className="form-label">Tag Name *</label>
               <input className="form-input" value={tagName} onChange={(e) => setTagName(e.target.value)} placeholder="e.g. GA4 - Purchase Event" />
             </div>
+
             <div className="form-group">
               <label className="form-label">Tag Type</label>
               <select className="form-select" value={tagType} onChange={(e) => setTagType(e.target.value)}>
@@ -140,13 +197,56 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
                 <option value="img">Custom Image</option>
               </select>
             </div>
+
+            {/* GA4-specific required fields */}
+            {tagType === "gaawe" && (
+              <div className="ga4-fields">
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
+                  ✦ GA4 REQUIRED FIELDS
+                </div>
+                <div className="form-group" style={{ marginBottom: 12 }}>
+                  <label className="form-label">Measurement ID *</label>
+                  <input className="form-input" value={measurementId} onChange={(e) => setMeasurementId(e.target.value)} placeholder="G-XXXXXXXXXX or {{GA4 Measurement ID}}" />
+                  <div className="section-hint">Your GA4 property ID — e.g. G-ABC123XYZ or a GTM variable</div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Event Name *</label>
+                  <input className="form-input" value={ga4EventName} onChange={(e) => setGa4EventName(e.target.value)} placeholder="e.g. purchase or {{Event}}" />
+                  <div className="section-hint">The GA4 event name to send — use {"{{Event}}"} to pass the datalayer event</div>
+                </div>
+              </div>
+            )}
+
+            {/* UA-specific required fields */}
+            {tagType === "ua" && (
+              <div className="ga4-fields">
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
+                  ✦ UA REQUIRED FIELDS
+                </div>
+                <div className="form-group" style={{ marginBottom: 12 }}>
+                  <label className="form-label">Tracking ID *</label>
+                  <input className="form-input" value={trackingId} onChange={(e) => setTrackingId(e.target.value)} placeholder="UA-XXXXXXXX-X" />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Track Type</label>
+                  <select className="form-select" value={trackType} onChange={(e) => setTrackType(e.target.value)} style={{ background: "white" }}>
+                    <option value="TRACK_EVENT">Event</option>
+                    <option value="TRACK_PAGEVIEW">Page View</option>
+                    <option value="TRACK_TRANSACTION">Transaction</option>
+                    <option value="TRACK_SOCIAL">Social</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
             <div className="form-group">
               <label className="form-label">Firing Trigger ID (optional)</label>
               <input className="form-input" value={triggerId} onChange={(e) => setTriggerId(e.target.value)} placeholder="e.g. 12345678" />
-              <div style={{ fontSize: 11, color: "var(--text2)", marginTop: 4 }}>Get trigger IDs from the Audit tab → Triggers</div>
+              <div className="section-hint">Get trigger IDs from the Audit tab → Triggers</div>
             </div>
+
             <div className="form-group">
-              <label className="form-label">Parameters</label>
+              <label className="form-label">Additional Parameters</label>
               {tagParams.map((p, i) => (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <input className="form-input" value={p.key} onChange={(e) => { const n = [...tagParams]; n[i].key = e.target.value; setTagParams(n); }} placeholder="key" style={{ flex: 1 }} />
@@ -159,6 +259,7 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
           </div>
         )}
 
+        {/* TRIGGER form */}
         {entityType === "trigger" && (
           <div className="card">
             <div className="card-title">⚡ Trigger Configuration</div>
@@ -173,22 +274,31 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
                 <option value="pageview">Page View</option>
                 <option value="domReady">DOM Ready</option>
                 <option value="windowLoaded">Window Loaded</option>
-                <option value="click">Click</option>
+                <option value="click">All Clicks</option>
                 <option value="linkClick">Link Click</option>
                 <option value="formSubmit">Form Submission</option>
                 <option value="scrollDepth">Scroll Depth</option>
                 <option value="historyChange">History Change</option>
+                <option value="jsError">JavaScript Error</option>
+                <option value="timer">Timer</option>
               </select>
             </div>
             {trigType === "customEvent" && (
-              <div className="form-group">
-                <label className="form-label">Event Name (dataLayer event)</label>
-                <input className="form-input" value={eventName} onChange={(e) => setEventName(e.target.value)} placeholder="e.g. purchase" />
+              <div className="ga4-fields">
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#003355", marginBottom: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
+                  ✦ CUSTOM EVENT SETTINGS
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">DataLayer Event Name *</label>
+                  <input className="form-input" value={trigEventName} onChange={(e) => setTrigEventName(e.target.value)} placeholder="e.g. purchase" />
+                  <div className="section-hint">Matches the event name pushed to dataLayer</div>
+                </div>
               </div>
             )}
           </div>
         )}
 
+        {/* VARIABLE form */}
         {entityType === "variable" && (
           <div className="card">
             <div className="card-title">📐 Variable Configuration</div>
@@ -199,7 +309,7 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
             <div className="form-group">
               <label className="form-label">Variable Type</label>
               <select className="form-select" value={varType} onChange={(e) => setVarType(e.target.value)}>
-                <option value="v">Data Layer Variable</option>
+                <option value="v">Data Layer Variable (DLV)</option>
                 <option value="k">1st Party Cookie</option>
                 <option value="jsm">JavaScript Variable</option>
                 <option value="u">URL</option>
@@ -207,41 +317,47 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
               </select>
             </div>
             {varType === "v" && (
-              <div className="form-group">
-                <label className="form-label">DataLayer Key Name</label>
-                <input className="form-input" value={dlvKey} onChange={(e) => setDlvKey(e.target.value)} placeholder="e.g. ecommerce.purchase.transaction_id" />
+              <div className="ga4-fields">
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">DataLayer Key Name *</label>
+                  <input className="form-input" value={dlvKey} onChange={(e) => setDlvKey(e.target.value)} placeholder="e.g. ecommerce.purchase.transaction_id" />
+                  <div className="section-hint">Use dot notation for nested keys</div>
+                </div>
               </div>
             )}
           </div>
         )}
 
-        <button className="btn btn-primary" style={{ width: "100%" }} onClick={handleSubmit} disabled={loading}>
-          {loading ? <><span className="spinner" /> Creating…</> : `▶ Create ${entityType.charAt(0).toUpperCase() + entityType.slice(1)}`}
+        <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", padding: 12 }} onClick={handleSubmit} disabled={loading}>
+          {loading ? <><span className="spinner" /> Creating…</> : `▶ Create ${entityType.charAt(0).toUpperCase() + entityType.slice(1)} in GTM`}
         </button>
       </div>
 
-      {/* Right: Preview pane */}
-      <div className="card">
-        <div className="card-title">👁️ Payload Preview</div>
-        <div className="code-block">
-          {JSON.stringify(
-            entityType === "tag"
-              ? { name: tagName, type: tagType, firingTriggerId: triggerId ? [triggerId] : [], parameter: tagParams.filter((p) => p.key) }
-              : entityType === "trigger"
-              ? { name: trigName, type: trigType, ...(trigType === "customEvent" ? { customEventFilter: [{ type: "equals", arg0: "{{_event}}", arg1: eventName }] } : {}) }
-              : { name: varName, type: varType, ...(varType === "v" ? { dataLayerKey: dlvKey } : {}) },
-            null, 2
-          )}
+      {/* Right: Preview + reference */}
+      <div>
+        <div className="card">
+          <div className="card-title">👁️ Live Payload Preview</div>
+          <div className="code-block">{JSON.stringify(previewPayload, null, 2)}</div>
         </div>
-        <div style={{ marginTop: 16 }}>
-          <div className="card-title" style={{ marginBottom: 8 }}>📖 GTM Type Reference</div>
-          <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.8 }}>
-            <div><code style={{ color: "var(--accent2)" }}>gaawe</code> → GA4 Event Tag</div>
-            <div><code style={{ color: "var(--accent2)" }}>ua</code> → Universal Analytics Tag</div>
-            <div><code style={{ color: "var(--accent2)" }}>html</code> → Custom HTML Tag</div>
-            <div><code style={{ color: "var(--accent2)" }}>customEvent</code> → Custom Event Trigger</div>
-            <div><code style={{ color: "var(--accent2)" }}>v</code> → DataLayer Variable (DLV)</div>
-            <div><code style={{ color: "var(--accent2)" }}>k</code> → 1st Party Cookie</div>
+
+        <div className="card card-highlight">
+          <div className="card-title" style={{ color: "#003355" }}>📖 GTM Type Reference</div>
+          <div style={{ fontSize: 12, color: "#003355", lineHeight: 2 }}>
+            {[
+              ["gaawe", "GA4 Event Tag"],
+              ["ua", "Universal Analytics Tag"],
+              ["html", "Custom HTML Tag"],
+              ["customEvent", "Custom Event Trigger"],
+              ["pageview", "Page View Trigger"],
+              ["v", "DataLayer Variable (DLV)"],
+              ["k", "1st Party Cookie"],
+              ["jsm", "JavaScript Variable"],
+            ].map(([code, label]) => (
+              <div key={code}>
+                <code style={{ background: "white", padding: "1px 5px", borderRadius: 3, fontFamily: "var(--font-mono)", fontSize: 11 }}>{code}</code>
+                <span style={{ marginLeft: 8 }}>→ {label}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -251,7 +367,6 @@ function ManualCreate({ post, setResult, setError, setLoading, loading }) {
 
 // ── DataLayer Doc Upload ───────────────────────────────────────────────────
 function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
-  const [rows, setRows] = useState(null);
   const [events, setEvents] = useState([]);
   const [dragover, setDragover] = useState(false);
   const [selectedEvents, setSelectedEvents] = useState(new Set());
@@ -269,33 +384,27 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
       };
       reader.readAsArrayBuffer(file);
     } else if (ext === "csv") {
-      Papa.parse(file, {
-        complete: (r) => processRows(r.data),
-        skipEmptyLines: true,
-      });
+      Papa.parse(file, { complete: (r) => processRows(r.data), skipEmptyLines: true });
     } else {
       setError("Please upload a CSV or XLSX file.");
     }
   }
 
   function processRows(data) {
-    setRows(data);
     const parsed = parseDataLayerDoc(data);
     setEvents(parsed);
     setSelectedEvents(new Set(parsed.map((e) => e.eventName)));
   }
 
   function handleDrop(e) {
-    e.preventDefault();
-    setDragover(false);
+    e.preventDefault(); setDragover(false);
     const file = e.dataTransfer.files[0];
     if (file) parseFile(file);
   }
 
   function toggleEvent(name) {
     const s = new Set(selectedEvents);
-    if (s.has(name)) s.delete(name);
-    else s.add(name);
+    s.has(name) ? s.delete(name) : s.add(name);
     setSelectedEvents(s);
   }
 
@@ -314,12 +423,10 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
 
   return (
     <div>
-      {/* Template download hint */}
       <div className="alert alert-info" style={{ marginBottom: 16 }}>
-        📋 <strong>Expected columns:</strong> Event Name | Variable Name | Variable Type (dataLayer/jsm/k) | Scope | Description
+        📋 <strong>Expected columns:</strong> Event Name &nbsp;|&nbsp; Variable Name &nbsp;|&nbsp; Variable Type (dataLayer/jsm/k) &nbsp;|&nbsp; Scope &nbsp;|&nbsp; Description
       </div>
 
-      {/* Upload zone */}
       {!events.length && (
         <div
           className={`upload-zone ${dragover ? "dragover" : ""}`}
@@ -339,11 +446,11 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div>
-              <span style={{ color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 13 }}>{events.length} events</span>
+              <span style={{ color: "var(--accent2)", fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 700 }}>{events.length} events</span>
               <span style={{ color: "var(--text2)", fontSize: 13 }}> detected in file</span>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-secondary" onClick={() => { setEvents([]); setRows(null); setSelectedEvents(new Set()); }}>↩ Clear</button>
+              <button className="btn btn-secondary" onClick={() => { setEvents([]); setSelectedEvents(new Set()); }}>↩ Clear</button>
               <button className="btn btn-primary" onClick={handleCreate} disabled={loading || selectedEvents.size === 0}>
                 {loading ? <><span className="spinner" /> Creating…</> : `▶ Create ${selectedEvents.size} Event(s) in GTM`}
               </button>
@@ -351,23 +458,20 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
           </div>
 
           {events.map((evt) => (
-            <div key={evt.eventName} className="card" style={{ marginBottom: 12, border: selectedEvents.has(evt.eventName) ? "1px solid var(--accent)" : "1px solid var(--border)" }}>
+            <div key={evt.eventName} className="card" style={{ marginBottom: 12, border: selectedEvents.has(evt.eventName) ? "2px solid var(--highlight-border)" : "1.5px solid var(--border)", background: selectedEvents.has(evt.eventName) ? "#f8fcff" : "white" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: evt.variables.length ? 12 : 0 }}>
-                <input type="checkbox" checked={selectedEvents.has(evt.eventName)} onChange={() => toggleEvent(evt.eventName)} style={{ width: 16, height: 16, cursor: "pointer", accentColor: "var(--accent)" }} />
+                <input type="checkbox" checked={selectedEvents.has(evt.eventName)} onChange={() => toggleEvent(evt.eventName)} style={{ width: 16, height: 16, cursor: "pointer", accentColor: "var(--accent2)" }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent2)" }}>{evt.eventName}</div>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--accent2)", fontWeight: 700 }}>{evt.eventName}</div>
                   <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>
-                    Will create: 1 Custom Event trigger + {evt.variables.filter((v) => v.varType === "dataLayer" || v.varType === "dlv").length} DLV variable(s)
+                    Will create: <span className="badge badge-highlight">1 trigger</span>{" "}
+                    <span className="badge badge-neutral" style={{ marginLeft: 4 }}>{evt.variables.filter((v) => ["dataLayer","dlv"].includes(v.varType)).length} DLV variables</span>
                   </div>
                 </div>
-                <span className="badge badge-neutral">{evt.variables.length} vars</span>
               </div>
-
               {evt.variables.length > 0 && (
                 <table className="data-table" style={{ marginTop: 4 }}>
-                  <thead>
-                    <tr><th>Variable</th><th>Type</th><th>Scope</th><th>Description</th></tr>
-                  </thead>
+                  <thead><tr><th>Variable</th><th>Type</th><th>Scope</th><th>Description</th></tr></thead>
                   <tbody>
                     {evt.variables.map((v, i) => (
                       <tr key={i}>
@@ -385,7 +489,6 @@ function DataLayerUpload({ post, setResult, setError, setLoading, loading }) {
         </>
       )}
 
-      {/* Sample template */}
       {!events.length && (
         <div className="card" style={{ marginTop: 20 }}>
           <div className="card-title">📋 Sample DataLayer Doc Format</div>
@@ -395,18 +498,13 @@ purchase,revenue,dataLayer,hit,Total revenue
 purchase,currency,dataLayer,hit,Currency code (e.g. GBP)
 add_to_cart,item_id,dataLayer,hit,Product SKU
 add_to_cart,item_name,dataLayer,hit,Product name
-add_to_cart,price,dataLayer,hit,Unit price
 page_view,page_type,dataLayer,session,Type of page`}</div>
           <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => {
             const csv = `Event Name,Variable Name,Variable Type,Scope,Description\npurchase,transaction_id,dataLayer,hit,Unique order ID\npurchase,revenue,dataLayer,hit,Total revenue\npurchase,currency,dataLayer,hit,Currency code\nadd_to_cart,item_id,dataLayer,hit,Product SKU\nadd_to_cart,item_name,dataLayer,hit,Product name`;
             const blob = new Blob([csv], { type: "text/csv" });
             const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = "datalayer_template.csv";
-            a.click();
-          }}>
-            ⬇ Download CSV Template
-          </button>
+            a.href = URL.createObjectURL(blob); a.download = "datalayer_template.csv"; a.click();
+          }}>⬇ Download CSV Template</button>
         </div>
       )}
     </div>
@@ -418,7 +516,7 @@ function ResultPanel({ result }) {
   if (result.type === "single") {
     return (
       <div className="alert alert-success">
-        ✅ <strong>{result.entity}</strong> created successfully!
+        ✅ <strong>{result.entity}</strong> created successfully in GTM!
         <div style={{ marginTop: 8 }}>
           <div className="code-block" style={{ maxHeight: 120 }}>{JSON.stringify(result.data, null, 2)}</div>
         </div>
